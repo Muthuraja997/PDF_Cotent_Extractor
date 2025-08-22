@@ -6,9 +6,6 @@ This script parses USB PD specification PDF files and extracts:
 2. All sections and subsections
 3. Generates structured JSONL output files
 4. Creates validation reports in Excel format
-
-Author: AI Assistant
-Date: August 2025
 """
 
 import re
@@ -19,34 +16,52 @@ import fitz  # PyMuPDF
 import jsonlines
 from pathlib import Path
 from typing import List, Dict, Optional, Tuple
-from dataclasses import dataclass, asdict
+from dataclasses import asdict
 import logging
 from tqdm import tqdm
 
+# Import from pdf_parser module
+from pdf_parser.base import Section
+from pdf_parser.schema_validator import SchemaValidator
+from pdf_parser.hierarchy_validator import HierarchyValidator
+from pdf_parser.coverage_analyzer import CoverageAnalyzer
+from pdf_parser.report_generator import ReportGenerator
+
 # Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
-@dataclass
-class Section:
-    """Data class representing a document section"""
-    section_id: str
-    title: str
-    page: int
-    level: int
-    parent_id: Optional[str]
-    full_path: str
-    doc_title: str
-    tags: List[str]
-
-class USBPDParser:
-    """Main parser class for USB PD specification documents"""
+class PDFExtractor:
+    """Base class for PDF extraction functionality"""
     
     def __init__(self, pdf_path: str):
         self.pdf_path = Path(pdf_path)
-        self.doc_title = "USB Power Delivery Specification"
-        self.sections: List[Section] = []
-        self.toc_sections: List[Section] = []
+        if not self.pdf_path.exists():
+            raise FileNotFoundError(f"PDF file not found: {pdf_path}")
+            
+    def extract_text_from_page(self, page_num: int) -> str:
+        """Extract text from a specific page using pdfplumber"""
+        try:
+            with pdfplumber.open(self.pdf_path) as pdf:
+                if 0 <= page_num < len(pdf.pages):
+                    return pdf.pages[page_num].extract_text() or ""
+                else:
+                    logger.warning(f"Page {page_num} out of range")
+                    return ""
+        except Exception as e:
+            logger.error(f"Error extracting text from page {page_num}: {e}")
+            return ""
+
+
+class SectionExtractor(PDFExtractor):
+    """Extracts sections from PDF documents"""
+    
+    def __init__(self, pdf_path: str, doc_title: str = "USB Power Delivery Specification"):
+        super().__init__(pdf_path)
+        self.doc_title = doc_title
         
         # Regex patterns for section identification
         self.section_patterns = [
@@ -58,119 +73,39 @@ class USBPDParser:
             r'^(\d+(?:\.\d+)*)\s*\t+([^\t]+?)\t+(\d+)$'
         ]
         
-    def extract_document_title(self) -> str:
-        """Extract document title from the first few pages"""
-        try:
-            with pdfplumber.open(self.pdf_path) as pdf:
-                # Check first 3 pages for title
-                for page_num in range(min(3, len(pdf.pages))):
-                    page = pdf.pages[page_num]
-                    text = page.extract_text()
-                    
-                    if text:
-                        lines = text.split('\n')
-                        for line in lines:
-                            line = line.strip()
-                            if 'usb' in line.lower() and ('power delivery' in line.lower() or 'pd' in line.lower()):
-                                if 'specification' in line.lower() or 'spec' in line.lower():
-                                    return line
-                                    
-        except Exception as e:
-            logger.warning(f"Could not extract document title: {e}")
-            
-        return "USB Power Delivery Specification"
-    
-    def extract_toc_from_pdf(self) -> List[Section]:
-        """Extract Table of Contents from PDF"""
-        logger.info("Extracting Table of Contents...")
-        toc_sections = []
-        
-        try:
-            with pdfplumber.open(self.pdf_path) as pdf:
-                # Look for ToC in first 20 pages
-                for page_num in range(min(20, len(pdf.pages))):
-                    page = pdf.pages[page_num]
-                    text = page.extract_text()
-                    
-                    if not text:
-                        continue
-                        
-                    lines = text.split('\n')
-                    
-                    # Check if this page contains ToC
-                    is_toc_page = any('contents' in line.lower() or 'table of contents' in line.lower() 
-                                    for line in lines[:5])
-                    
-                    if not is_toc_page:
-                        # Also check for numbered sections
-                        numbered_lines = [line for line in lines if re.match(r'^\d+(?:\.\d+)*\s+', line.strip())]
-                        if len(numbered_lines) < 3:
-                            continue
-                    
-                    # Extract sections from this page
-                    page_sections = self._extract_sections_from_text(lines, page_num + 1)
-                    toc_sections.extend(page_sections)
-                    
-        except Exception as e:
-            logger.error(f"Error extracting ToC: {e}")
-            
-        return toc_sections
-    
-    def _extract_sections_from_text(self, lines: List[str], page_num: int) -> List[Section]:
-        """Extract sections from text lines using regex patterns"""
-        sections = []
-        
-        for line in lines:
-            line = line.strip()
-            if not line:
-                continue
+    def _parse_section_header(self, line: str, page_num: int) -> Optional[Section]:
+        """Parse a single line to extract section information"""
+        for pattern in self.section_patterns:
+            match = re.match(pattern, line.strip())
+            if match:
+                section_id = match.group(1)
+                title = match.group(2).strip()
+                level = section_id.count('.') + 1
                 
-            # Try each regex pattern
-            for pattern in self.section_patterns:
-                match = re.match(pattern, line)
-                if match:
-                    section_id = match.group(1)
-                    title = match.group(2).strip()
-                    try:
-                        page_ref = int(match.group(3))
-                    except (ValueError, IndexError):
-                        page_ref = page_num
-                    
-                    # Calculate level based on dots in section_id
-                    level = section_id.count('.') + 1
-                    
-                    # Determine parent_id
-                    parent_id = None
-                    if '.' in section_id:
-                        parent_parts = section_id.split('.')
-                        parent_id = '.'.join(parent_parts[:-1])
-                    
-                    # Generate full_path
-                    full_path = f"{section_id} {title}"
-                    
-                    # Generate tags based on title content
-                    tags = self._generate_tags(title)
-                    
-                    section = Section(
-                        section_id=section_id,
-                        title=title,
-                        page=page_ref,
-                        level=level,
-                        parent_id=parent_id,
-                        full_path=full_path,
-                        doc_title=self.doc_title,
-                        tags=tags
-                    )
-                    
-                    sections.append(section)
-                    break
-                    
-        return sections
+                # Determine parent ID
+                parent_id = None
+                if '.' in section_id:
+                    parent_id = section_id.rsplit('.', 1)[0]
+                
+                full_path = f"{section_id} {title}"
+                tags = self._generate_tags(title)
+                
+                return Section(
+                    section_id=section_id,
+                    title=title,
+                    page=page_num,
+                    level=level,
+                    parent_id=parent_id,
+                    full_path=full_path,
+                    doc_title=self.doc_title,
+                    tags=tags
+                )
+        return None
     
     def _generate_tags(self, title: str) -> List[str]:
         """Generate semantic tags based on section title"""
-        tags = []
         title_lower = title.lower()
+        tags = []
         
         # Define tag mappings
         tag_mappings = {
@@ -190,7 +125,10 @@ class USBPDParser:
             'vbus': ['vbus'],
             'cc': ['cc-line'],
             'sop': ['sop'],
-            'collision': ['collision', 'avoidance'],
+            'collision': [
+                'collision',
+                'avoidance'
+            ],
             'revision': ['revision'],
             'compatibility': ['compatibility'],
             'introduction': ['intro'],
@@ -202,15 +140,68 @@ class USBPDParser:
                 tags.extend(tag_list)
         
         return list(set(tags))  # Remove duplicates
-    
-    def extract_all_sections_from_pdf(self) -> List[Section]:
-        """Extract all sections from the entire PDF document"""
+
+    def extract_toc_sections(self) -> List[Section]:
+        """Extract Table of Contents sections from PDF"""
+        logger.info("Extracting Table of Contents...")
+        toc_sections = []
+        
+        try:
+            with pdfplumber.open(self.pdf_path) as pdf:
+                # Look for ToC in first 20 pages
+                for page_num in range(min(20, len(pdf.pages))):
+                    page = pdf.pages[page_num]
+                    text = page.extract_text()
+                    
+                    if not text:
+                        continue
+                        
+                    lines = text.split('\n')
+                    
+                    # Check if this page contains ToC
+                    keywords = ['contents', 'table of contents']
+                    is_toc_page = any(
+                        keyword in line.lower() 
+                        for keyword in keywords
+                        for line in lines[:5]
+                    )
+                    
+                    if not is_toc_page:
+                        # Also check for numbered sections
+                        section_pattern = r'^\d+(?:\.\d+)*\s+'
+                        numbered_lines = [
+                            line for line in lines 
+                            if re.match(section_pattern, line.strip())
+                        ]
+                        if len(numbered_lines) < 3:
+                            continue
+                    
+                    # Extract sections from this page
+                    for line in lines:
+                        section = self._parse_section_header(
+                            line, 
+                            page_num + 1
+                        )
+                        if section:
+                            toc_sections.append(section)
+        except Exception as e:
+            logger.error(f"Error extracting ToC: {e}")
+            
+        logger.info(f"Extracted {len(toc_sections)} sections from ToC")
+        return toc_sections
+        
+    def extract_all_sections(self) -> List[Section]:
+        """Extract all sections from entire PDF document"""
         logger.info("Extracting all sections from PDF...")
         all_sections = []
         
         try:
             with pdfplumber.open(self.pdf_path) as pdf:
-                for page_num, page in enumerate(tqdm(pdf.pages, desc="Processing pages")):
+                pages_iter = tqdm(
+                    pdf.pages,
+                    desc="Processing pages"
+                )
+                for page_num, page in enumerate(pages_iter):
                     text = page.extract_text()
                     
                     if not text:
@@ -218,212 +209,136 @@ class USBPDParser:
                     
                     lines = text.split('\n')
                     
-                    # Look for section headers in the page content
                     for line in lines:
-                        line = line.strip()
-                        
-                        # Check if line looks like a section header
-                        if self._is_section_header(line):
-                            section = self._parse_section_header(line, page_num + 1)
-                            if section:
-                                all_sections.append(section)
-                                
+                        section = self._parse_section_header(
+                            line, 
+                            page_num + 1
+                        )
+                        if section:
+                            all_sections.append(section)
+                            
         except Exception as e:
             logger.error(f"Error extracting all sections: {e}")
             
+        logger.info(f"Extracted {len(all_sections)} sections from PDF")
         return all_sections
     
-    def _is_section_header(self, line: str) -> bool:
-        """Determine if a line is likely a section header"""
-        # Check for numbered section pattern at start of line
-        if re.match(r'^\d+(?:\.\d+)*\s+[A-Z]', line):
-            return True
-            
-        # Check for all caps headers
-        if line.isupper() and len(line.split()) <= 8 and len(line) > 5:
-            return True
-            
-        return False
+class USBPDParser:
+    """Main parser class for USB PD specification documents"""
     
-    def _parse_section_header(self, line: str, page_num: int) -> Optional[Section]:
-        """Parse a section header line into a Section object"""
-        # Try to match numbered section
-        match = re.match(r'^(\d+(?:\.\d+)*)\s+(.+)$', line)
-        if match:
-            section_id = match.group(1)
-            title = match.group(2).strip()
-            
-            level = section_id.count('.') + 1
-            parent_id = None
-            if '.' in section_id:
-                parent_parts = section_id.split('.')
-                parent_id = '.'.join(parent_parts[:-1])
-            
-            full_path = f"{section_id} {title}"
-            tags = self._generate_tags(title)
-            
-            return Section(
-                section_id=section_id,
-                title=title,
-                page=page_num,
-                level=level,
-                parent_id=parent_id,
-                full_path=full_path,
-                doc_title=self.doc_title,
-                tags=tags
-            )
-        
-        return None
-    
-    def save_jsonl(self, sections: List[Section], filename: str):
-        """Save sections to JSONL file"""
-        output_path = Path(filename)
-        logger.info(f"Saving {len(sections)} sections to {output_path}")
-        
-        try:
-            with jsonlines.open(output_path, 'w') as writer:
-                for section in sections:
-                    writer.write(asdict(section))
-            logger.info(f"Successfully saved to {output_path}")
-        except Exception as e:
-            logger.error(f"Error saving JSONL file {filename}: {e}")
-    
-    def generate_validation_report(self, toc_sections: List[Section], all_sections: List[Section]):
-        """Generate Excel validation report comparing ToC and parsed sections"""
-        logger.info("Generating validation report...")
-        
-        try:
-            # Create DataFrames
-            toc_df = pd.DataFrame([asdict(s) for s in toc_sections])
-            all_df = pd.DataFrame([asdict(s) for s in all_sections])
-            
-            # Summary statistics
-            summary_data = {
-                'Metric': [
-                    'Total ToC Sections',
-                    'Total Parsed Sections',
-                    'Sections in Both',
-                    'ToC Only',
-                    'Parsed Only',
-                    'Level 1 Sections (ToC)',
-                    'Level 2 Sections (ToC)',
-                    'Level 3+ Sections (ToC)'
-                ],
-                'Count': [
-                    len(toc_sections),
-                    len(all_sections),
-                    len(set(s.section_id for s in toc_sections) & set(s.section_id for s in all_sections)),
-                    len(set(s.section_id for s in toc_sections) - set(s.section_id for s in all_sections)),
-                    len(set(s.section_id for s in all_sections) - set(s.section_id for s in toc_sections)),
-                    len([s for s in toc_sections if s.level == 1]),
-                    len([s for s in toc_sections if s.level == 2]),
-                    len([s for s in toc_sections if s.level >= 3])
-                ]
-            }
-            
-            summary_df = pd.DataFrame(summary_data)
-            
-            # Find mismatches
-            toc_ids = set(s.section_id for s in toc_sections)
-            all_ids = set(s.section_id for s in all_sections)
-            
-            missing_in_parsed = toc_ids - all_ids
-            extra_in_parsed = all_ids - toc_ids
-            
-            mismatch_data = []
-            for section_id in missing_in_parsed:
-                toc_section = next(s for s in toc_sections if s.section_id == section_id)
-                mismatch_data.append({
-                    'Section ID': section_id,
-                    'Title': toc_section.title,
-                    'Issue': 'Missing in parsed sections',
-                    'ToC Page': toc_section.page,
-                    'Parsed Page': 'N/A'
-                })
-            
-            for section_id in extra_in_parsed:
-                all_section = next(s for s in all_sections if s.section_id == section_id)
-                mismatch_data.append({
-                    'Section ID': section_id,
-                    'Title': all_section.title,
-                    'Issue': 'Extra in parsed sections',
-                    'ToC Page': 'N/A',
-                    'Parsed Page': all_section.page
-                })
-            
-            mismatch_df = pd.DataFrame(mismatch_data)
-            
-            # Save to Excel
-            with pd.ExcelWriter('usb_pd_validation_report.xlsx', engine='openpyxl') as writer:
-                summary_df.to_excel(writer, sheet_name='Summary', index=False)
-                if not toc_df.empty:
-                    toc_df.to_excel(writer, sheet_name='ToC Sections', index=False)
-                if not all_df.empty:
-                    all_df.to_excel(writer, sheet_name='All Sections', index=False)
-                if not mismatch_df.empty:
-                    mismatch_df.to_excel(writer, sheet_name='Mismatches', index=False)
-            
-            logger.info("Validation report saved to usb_pd_validation_report.xlsx")
-            
-        except Exception as e:
-            logger.error(f"Error generating validation report: {e}")
-    
-    def process_pdf(self, pdf_path: str):
-        """Main method to process PDF and generate all outputs"""
+    def __init__(self, pdf_path: str):
         self.pdf_path = Path(pdf_path)
+        self.doc_title = "USB Power Delivery Specification"
         
-        if not self.pdf_path.exists():
-            raise FileNotFoundError(f"PDF file not found: {pdf_path}")
+    def extract_document_title(self) -> str:
+        """Extract document title from the first few pages"""
+        try:
+            with pdfplumber.open(self.pdf_path) as pdf:
+                # Check first 3 pages for title
+                for page_num in range(min(3, len(pdf.pages))):
+                    page = pdf.pages[page_num]
+                    text = page.extract_text()
+                    
+                    if text:
+                        lines = text.split('\n')
+                        for line in lines:
+                            line_lower = line.lower()
+                            has_usb = 'usb' in line_lower
+                            has_pd = ('power delivery' in line_lower or 
+                                     'pd' in line_lower)
+                            has_spec = ('specification' in line_lower or 
+                                       'spec' in line_lower)
+                            
+                            if has_usb and has_pd and has_spec:
+                                return line
+                                    
+        except Exception as e:
+            logger.warning(f"Could not extract document title: {e}")
+            
+        return "USB Power Delivery Specification"
+    
+    def save_to_jsonl(self, sections: List[Section], output_file: str) -> None:
+        """Save sections to JSONL file"""
+        with jsonlines.open(output_file, 'w') as writer:
+            for section in sections:
+                writer.write(asdict(section))
+        logger.info(f"Saved {len(sections)} sections to {output_file}")
+    
+    def save_metadata(
+        self, 
+        toc_sections: List[Section], 
+        all_sections: List[Section]
+    ) -> None:
+        """Save metadata about the parsing process"""
+        import datetime
         
+        metadata = {
+            "doc_title": self.doc_title,
+            "total_toc_sections": len(toc_sections),
+            "total_sections": len(all_sections),
+            "processing_date": datetime.datetime.now().isoformat(),
+            "source_file": self.pdf_path.name
+        }
+        
+        with open('usb_pd_metadata.jsonl', 'w') as f:
+            json.dump(metadata, f, indent=2)
+            
+        logger.info("Saved metadata to usb_pd_metadata.jsonl")
+    
+    def process_pdf(self) -> Tuple[List[Section], List[Section]]:
+        """Process PDF and extract all content"""
         logger.info(f"Processing PDF: {self.pdf_path}")
         
         # Extract document title
         self.doc_title = self.extract_document_title()
         logger.info(f"Document title: {self.doc_title}")
         
-        # Extract ToC sections
-        self.toc_sections = self.extract_toc_from_pdf()
-        logger.info(f"Extracted {len(self.toc_sections)} ToC sections")
+        # Create section extractor
+        extractor = SectionExtractor(str(self.pdf_path), self.doc_title)
         
-        # Extract all sections
-        self.sections = self.extract_all_sections_from_pdf()
-        logger.info(f"Extracted {len(self.sections)} total sections")
+        # Extract ToC and all sections
+        toc_sections = extractor.extract_toc_sections()
+        all_sections = extractor.extract_all_sections()
         
-        # Save JSONL files
-        self.save_jsonl(self.toc_sections, 'usb_pd_toc.jsonl')
-        self.save_jsonl(self.sections, 'usb_pd_spec.jsonl')
-        
-        # Generate metadata
-        metadata = {
-            'doc_title': self.doc_title,
-            'total_toc_sections': len(self.toc_sections),
-            'total_sections': len(self.sections),
-            'processing_date': pd.Timestamp.now().isoformat(),
-            'source_file': str(self.pdf_path)
-        }
-        
-        with open('usb_pd_metadata.jsonl', 'w') as f:
-            json.dump(metadata, f, indent=2)
+        # Save outputs
+        self.save_to_jsonl(toc_sections, 'usb_pd_toc.jsonl')
+        self.save_to_jsonl(all_sections, 'usb_pd_spec.jsonl')
+        self.save_metadata(toc_sections, all_sections)
         
         # Generate validation report
-        self.generate_validation_report(self.toc_sections, self.sections)
+        report_generator = ReportGenerator()
+        report_generator.generate_validation_report(toc_sections, all_sections)
         
-        logger.info("Processing complete!")
+        return toc_sections, all_sections
 
 def main():
-    """Main function to run the parser"""
+    """Main entry point for the parser"""
     import argparse
     
-    parser = argparse.ArgumentParser(description='USB PD Specification PDF Parser')
-    parser.add_argument('pdf_file', help='Path to the USB PD specification PDF file')
+    # Set up logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s'
+    )
+    
+    # Parse arguments
+    parser = argparse.ArgumentParser(
+        description='USB PD Specification PDF Parser'
+    )
+    parser.add_argument(
+        'pdf_file',
+        help='Path to the USB PD specification PDF file'
+    )
     
     args = parser.parse_args()
     
     try:
-        pdf_parser = USBPDParser(args.pdf_file)
-        pdf_parser.process_pdf(args.pdf_file)
+        # Process the PDF
+        usb_parser = USBPDParser(args.pdf_file)
+        toc_sections, all_sections = usb_parser.process_pdf()
         
-        print("\n✅ Processing completed successfully!")
+        logger.info("PDF processing completed successfully")
+        print("\nProcessing completed successfully!")
         print("Generated files:")
         print("- usb_pd_toc.jsonl (Table of Contents)")
         print("- usb_pd_spec.jsonl (All sections)")
@@ -432,7 +347,13 @@ def main():
         
     except Exception as e:
         logger.error(f"Error processing PDF: {e}")
-        print(f"\n❌ Error: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return 1
+        
+    return 0
+
 
 if __name__ == "__main__":
-    main()
+    import sys
+    sys.exit(main())
