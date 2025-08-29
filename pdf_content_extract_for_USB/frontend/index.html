@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>USB PD Specification Parser</title>
+    <link rel="stylesheet" href="css/styles.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.1.1/css/all.min.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1><i class="fas fa-file-pdf"></i> USB PD Specification Parser</h1>
+            <p>A tool for extracting structured content from USB Power Delivery specification PDFs</p>
+        </header>
+
+        <main>
+            <section class="upload-section">
+                <div class="card">
+                    <h2><i class="fas fa-upload"></i> Upload PDF</h2>
+                    <div class="upload-area" id="dropZone">
+                        <i class="fas fa-file-upload"></i>
+                        <p>Drag & Drop your USB PD specification PDF here</p>
+                        <p>or</p>
+                        <label for="fileInput" class="btn primary-btn">Choose File</label>
+                        <input type="file" id="fileInput" accept=".pdf" hidden>
+                        <p id="fileName" class="file-name"></p>
+                    </div>
+                    <button id="parseBtn" class="btn primary-btn" disabled>
+                        <i class="fas fa-cogs"></i> Parse PDF
+                    </button>
+                </div>
+            </section>
+
+            <section class="options-section">
+                <div class="card">
+                    <h2><i class="fas fa-sliders-h"></i> Parsing Options</h2>
+                    <div class="options-grid">
+                        <div class="option">
+                            <input type="checkbox" id="extractToc" checked>
+                            <label for="extractToc">Extract Table of Contents</label>
+                        </div>
+                        <div class="option">
+                            <input type="checkbox" id="extractSections" checked>
+                            <label for="extractSections">Extract All Sections</label>
+                        </div>
+                        <div class="option">
+                            <input type="checkbox" id="generateReport" checked>
+                            <label for="generateReport">Generate Validation Report</label>
+                        </div>
+                        <div class="option">
+                            <input type="checkbox" id="enhanceContent">
+                            <label for="enhanceContent">Enhance Content Extraction</label>
+                        </div>
+                    </div>
+                </div>
+            </section>
+            
+            <section class="progress-section" id="progressSection" style="display: none;">
+                <div class="card">
+                    <h2><i class="fas fa-tasks"></i> Parsing Progress</h2>
+                    <div class="progress-container">
+                        <div class="progress-label">
+                            <span id="progressStep">Initializing...</span>
+                            <span id="progressPercentage">0%</span>
+                        </div>
+                        <div class="progress-bar">
+                            <div class="progress-fill" id="progressFill" style="width: 0%;"></div>
+                        </div>
+                    </div>
+                    <div class="progress-logs" id="progressLogs">
+                        <p class="log-entry">Starting parser initialization...</p>
+                    </div>
+                </div>
+            </section>
+
+            <section class="results-section" id="resultsSection" style="display: none;">
+                <div class="card">
+                    <h2><i class="fas fa-chart-bar"></i> Parsing Results</h2>
+                    <div class="results-grid">
+                        <div class="result-card">
+                            <div class="result-icon"><i class="fas fa-list"></i></div>
+                            <div class="result-title">Table of Contents</div>
+                            <div class="result-stat" id="tocCount">0</div>
+                            <div class="result-action">
+                                <button class="btn secondary-btn" id="viewTocBtn">View</button>
+                                <button class="btn secondary-btn" id="downloadTocBtn">Download</button>
+                            </div>
+                        </div>
+                        <div class="result-card">
+                            <div class="result-icon"><i class="fas fa-align-left"></i></div>
+                            <div class="result-title">Sections</div>
+                            <div class="result-stat" id="sectionsCount">0</div>
+                            <div class="result-action">
+                                <button class="btn secondary-btn" id="viewSectionsBtn">View</button>
+                                <button class="btn secondary-btn" id="downloadSectionsBtn">Download</button>
+                            </div>
+                        </div>
+                        <div class="result-card">
+                            <div class="result-icon"><i class="fas fa-clipboard-check"></i></div>
+                            <div class="result-title">Validation</div>
+                            <div class="result-stat" id="coveragePct">0%</div>
+                            <div class="result-action">
+                                <button class="btn secondary-btn" id="viewReportBtn">View Report</button>
+                                <button class="btn secondary-btn" id="downloadReportBtn">Download</button>
+                            </div>
+                        </div>
+                        <div class="result-card">
+                            <div class="result-icon"><i class="fas fa-info-circle"></i></div>
+                            <div class="result-title">Metadata</div>
+                            <div class="result-stat">Info</div>
+                            <div class="result-action">
+                                <button class="btn secondary-btn" id="viewMetadataBtn">View</button>
+                                <button class="btn secondary-btn" id="downloadMetadataBtn">Download</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </main>
+
+        <!-- Modal for viewing JSON data -->
+        <div class="modal" id="jsonModal">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2 id="modalTitle">Data Viewer</h2>
+                    <button id="closeModal" class="close-btn">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div class="json-viewer-controls">
+                        <input type="text" id="jsonSearch" placeholder="Search...">
+                        <button id="expandAll" class="btn small-btn">Expand All</button>
+                        <button id="collapseAll" class="btn small-btn">Collapse All</button>
+                    </div>
+                    <div class="json-viewer" id="jsonViewer"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+
+    <script src="js/main.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.4.0/highlight.min.js"></script>
+</body>
+</html>
